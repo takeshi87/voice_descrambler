@@ -12,5 +12,7 @@ It can be further used to find the most optimal permutation of segments based on
 
 Finding the permutation:
 
+g++ puzzle_solver.cpp -o puzzle_solver -O3 -std=c++2a
+
 ./puzzle_solver < weights.txt
 
