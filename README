@@ -1,0 +1,16 @@
+Quick prototype for analyser & descrambler of scambled voice samples as collected with HF radio.
+Format details - time domain scrambling, by permutation of 44ms segments, in blocks of 15 segments.
+Transmission has a preamble of CW signal around 2031Hz and FSK with offset 1200Hz, 200baud, centered around 1800Hz.
+Postamble is FSK 1200Hz offset, ~22.8 baud, centered around 1800Hz.
+
+Usage:
+
+analyser.py - parser, analyses and tries to descramble files listed in 'files_to_use'. Permutation used is taken from 'testPermut' variable.
+
+running it produces weights.txt, describing degree to which segments i, j are unsimilar (cost function). 
+It can be further used to find the most optimal permutation of segments based on such cost function (and in current implementation - limiting permutations to 15 segment blocks - as seems to be done in the analysed mechanism).
+
+Finding the permutation:
+
+./puzzle_solver < weights.txt
+
