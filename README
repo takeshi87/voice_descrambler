@@ -5,7 +5,7 @@ Postamble is FSK 1200Hz offset, ~22.8 baud, centered around 1800Hz.
 
 Usage:
 
-analyser.py - parser, analyses and tries to descramble files listed in 'files_to_use'. Permutation used is taken from 'testPermut' variable.
+analyser.py - parser, analyses and tries to descramble files listed in 'files_to_use'. Permutation used is taken from provided file, 'permutation.txt' by default.
 
 
 To calculate segments similarity weights based on given files, and save it in weights.txt:
