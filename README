@@ -7,12 +7,27 @@ Usage:
 
 analyser.py - parser, analyses and tries to descramble files listed in 'files_to_use'. Permutation used is taken from 'testPermut' variable.
 
-running it produces weights.txt, describing degree to which segments i, j are unsimilar (cost function). 
-It can be further used to find the most optimal permutation of segments based on such cost function (and in current implementation - limiting permutations to 15 segment blocks - as seems to be done in the analysed mechanism).
 
-Finding the permutation:
+To calculate segments similarity weights based on given files, and save it in weights.txt:
+
+analyser.py -w weights.txt file1.wav file2.wav
+
+
+Produced weights.txt describes degree to which segments i, j are unsimilar (cost function).
+It can be further used to find the most optimal permutation of segments minimizing such cost function (permutations are disjoint in different 15 segment blocks).
+
+
+Building the 'puzzle_solver':
 
 g++ puzzle_solver.cpp -o puzzle_solver -O3 -std=c++2a
 
+
+Finding the permutation:
+
 ./puzzle_solver < weights.txt
+
+
+To descramble a wave file, using permutation defined in perm.txt:
+
+analyser.py -p perm.txt scrambled_file.wav
 
