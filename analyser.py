@@ -5,6 +5,7 @@ import os
 import wave
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import collections  as mc
 import argparse
 from scipy.signal import butter, lfilter, freqz, filtfilt
 from scipy import signal
@@ -74,6 +75,7 @@ def gen_preamble(srate=8000, f0 = 1200, f1 = 2400, fx = 2031, add_silence = 0.02
     return np.concatenate((c_cw(srate, fx, 0.264),
                            silence(srate, 0.064),
                            cph_fsk(srate, [f0, f1], 200, '11010100111011001001011000011100001111011100010100010000111110010000100010001000100000000000011011010100100010111001001011101000'),
+                           #cph_fsk(srate, [f0, f1], 200, '1101010011101100100101100001110000111101110001010001000011111001'),silence(srate, 64/200), # second type of scrambler... has different last 65 bits of preamble, maybe needs decoding
                            silence(srate, add_silence)))
                            
 
@@ -112,7 +114,6 @@ def fm_demod(data):
     #return np.angle(np.conjugate(data[:-1]) * data[1:])
     
     
-    
 def save_iq_real_part_to_wave(srate, fname, data):
     pwave = wave.open(fname, "wb")
     pwave.setnchannels(1)
@@ -132,13 +133,15 @@ def match_transmission_start_stop(srate, pre, post):
     postIdx=0
     res = []
     for beg in pre:
-        if beg < last_post + min_samp_dist:
+        if beg < last_post - min_samp_dist:
             print(f"too early peak... will update old entry: {beg/srate}")
             lastEnt = res[-1]
             print(f"Peak {lastEnt[0]/srate} has no matching postamble found - skipping transmission!!!" )
             res = res[:-1]
             postIdx = np.maximum(0, postIdx-1)
-
+        elif beg < last_post + min_samp_dist:
+            print(f"skipping beg: {beg}")
+            continue
         while postIdx < len(post) and post[postIdx] < beg + min_beg_post_samp_dist:
             if beg > post[postIdx]:
                 print(f"skipped old postamble: {post[postIdx]/srate}")
@@ -176,17 +179,17 @@ def get_segm_voice_trans(srate, audio, pream_postam_pairs, pream_len, postam_len
         numSegments = int(round(nsamp/singleSegmentSamples))
         inacc = nsamp - numSegments*singleSegmentSamples
         print(f"Inaccurate by: {inacc*1000/srate} ms")
-        if abs(inacc)/srate > 0.0025:
-            print("Inaccurate by more than 2.5ms! Skipping for now...")
-            continue
         if numSegments%15 != 0:
             print(f"numSegments%15 != 0 (=={numSegments%15})! Skipping for now...")
+            continue
+        inacc_threshold_ms = 3.7
+        if abs(inacc)/srate > inacc_threshold_ms/1000:
+            print(f"Inaccurate by more than {inacc_threshold_ms}ms! Skipping for now...")
             continue
         res.append(split_voice(audio[vbeg:vend], singleSegmentSamples))
         res2.append(np.array(audio[a:b+postam_len+1]))
         timedesc.append(f"_T+{int(round(a/srate))}s")
         inter.append((vbeg, vbeg+numSegments*singleSegmentSamples))
-        print(f"sizeIs {np.sum([len(x) for x in res[-1]])} vs {numSegments*singleSegmentSamples}")
     return res, res2, {'timedesc' : timedesc, 'interval' : inter}
        
         
@@ -199,6 +202,11 @@ def show_spectrogram(srate, data):
     plt.show() 
     return
     #powerSpectrum, frequenciesFound, time, imageAxis = plt.specgram(aiq[:30*srate], Fs=srate)
+    #plt.show()
+    #fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(14, 7))
+    #ax1.specgram(shifted_ver1, NFFT=256, Fs=srate, noverlap=256-256/64)
+    #ax2.specgram(shifted_ver, NFFT=256, Fs=srate, noverlap=256-256/64)
+    #ax2.set_ylim([50, 500])
     #plt.show()
 
 def simp_qnorm_j(a):
@@ -228,6 +236,7 @@ def permut_rec_window_and_concat(rec, P):
         return np.concatenate(recP)
 
 def extract_transmissions_from_wav(fname, show=False):
+    print(f"Processing '{fname}'...")
     basename = os.path.splitext(os.path.split(fname)[1])[0]
     w = wave.open(fname)
     srate = w.getframerate()
@@ -238,24 +247,25 @@ def extract_transmissions_from_wav(fname, show=False):
 
     data=w.readframes(w.getnframes())
     w.close()
+
+    assert(w.getsampwidth()==2)
     audio=np.frombuffer(data, dtype='short') #unhack, assumes 2 bytes per sample
+    if w.getnchannels()==2:
+        print("Using just 1st channel data!")
+        audio = audio[::2]
+
     print("Data read")
-    aiq = real_to_iq(srate, audio) #filtering embedded... is there some resulting time shift? #TODO: unhack!
+    aiq = real_to_iq(srate, audio)
     print("converted to I/Q")
 
     pat_dem_pre = np.flip(fm_demod(shift_freq(srate, preamble, -1800)))
     pat_dem_post = np.flip(fm_demod(shift_freq(srate, postamble, -1800)))
     
     shifted_ver = shift_freq(srate, aiq, -1800)
-#    shifted_ver = butter_bandpass_filter(aiq, 450, 750, srate, order=5)
+    shifted_ver = butter_lowpass_filter(shifted_ver, 800, srate)
+
     dem = fm_demod(shifted_ver)
     dem_conj = np.conjugate(dem)
-    #plt.plot(dem.imag)
-    #plt.plot(dem.real)
-    #plt.show()
-    #show_spectrogram(srate, aiqf)
-    #plt.plot(dem)
-    #plt.show()
 
     conv_dem_pre = np.abs(signal.fftconvolve(dem_conj, pat_dem_pre, 'valid'))
     conv_dem_post = np.abs(signal.fftconvolve(dem_conj, pat_dem_post, 'valid'))
@@ -267,14 +277,14 @@ def extract_transmissions_from_wav(fname, show=False):
     THRESHOLD_PREAMBLE_PROMINENCE = 0.2
     THRESHOLD_POSTAMBLE_PEAK_HEIGHT = 0.3
     THRESHOLD_POSTAMBLE_PROMINENCE = 0.18
+    DISTANCE_PREAMBLE = 0.15
 
-    pre_peaks, peak_prop = signal.find_peaks(conv_dem_pre, height = THRESHOLD_PREAMBLE_PEAK_HEIGHT * np.max(conv_dem_pre), distance = int(1.5*srate), prominence=THRESHOLD_PREAMBLE_PROMINENCE * np.max(conv_dem_pre), wlen=srate/10)
+    pre_peaks, peak_prop = signal.find_peaks(conv_dem_pre, height = THRESHOLD_PREAMBLE_PEAK_HEIGHT * np.max(conv_dem_pre), distance = int(DISTANCE_PREAMBLE*srate), prominence=THRESHOLD_PREAMBLE_PROMINENCE * np.max(conv_dem_pre), wlen=srate*0.10)
     print(np.array(pre_peaks)/srate)
 #    print(peak_prop)
     po_peaks, po_peak_prop = signal.find_peaks(conv_dem_post, height = THRESHOLD_POSTAMBLE_PEAK_HEIGHT * np.max(conv_dem_post), distance = int(1.5*srate), prominence= THRESHOLD_POSTAMBLE_PROMINENCE * np.max(conv_dem_post), wlen=srate/8)
     print(np.array(po_peaks)/srate)
 #    print(po_peak_prop)
-
 
     signal_intervals = match_transmission_start_stop(srate, pre_peaks, po_peaks)
     print("Scrambled fragments found:")
@@ -282,8 +292,14 @@ def extract_transmissions_from_wav(fname, show=False):
 
 
     if show:
-        plt.plot(np.array(range(len(conv_dem_pre)))/srate, conv_dem_pre)
-        plt.plot(np.array(range(len(conv_dem_post)))/srate, conv_dem_post)
+        fig, ax = plt.subplots()
+        plt.plot(np.array(range(len(conv_dem_pre)))/srate, conv_dem_pre, label='Preamble corel')
+        plt.plot(np.array(range(len(conv_dem_post)))/srate, conv_dem_post, label='Postamble corel')
+        plt.plot([i/srate for i in pre_peaks], [conv_dem_pre[x] for x in pre_peaks], 'o', mfc='none')
+        plt.plot([i/srate for i in po_peaks], [conv_dem_post[x] for x in po_peaks], 'o', mfc='none')
+        lc = mc.LineCollection([[(a/srate, conv_dem_pre[a]), (b/srate, conv_dem_post[b])] for a,b in signal_intervals], color='red')
+        ax.add_collection(lc)
+        plt.legend(loc='lower right')
         plt.show()
 
     print(f"Num identified transmissions: {len(signal_intervals)}")
@@ -323,9 +339,24 @@ def read_permutation_from_file(fname):
         for w in re.split(r'[,\s]+', line):
             if w!='':
                 perm.append(int(w))
-    print("Permutation:")
-    print(perm)
     return perm
+
+def read_filenames_from_file(fname):
+    fnames = []
+    f = open(fname, 'r')
+    c = f.readlines()
+    f.close()
+    
+    for line in c:
+        n = line.strip()
+        if n!="" and n!='#':
+            if os.path.exists(n):
+                fnames.append(line.strip())
+            else:
+                print(f"Path skipped, as file doesn't exist: '{n}'")
+    
+    return fnames
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -336,13 +367,21 @@ def main():
     args = parser.parse_args()
 
     scrambler_permut = read_permutation_from_file(args.perm_fname)
+    if args.verbose > 2:
+        print("Permutation:")
+        print(perm)
 
     all_segm_transmissions = []
     all_recs_cut = []
     all_meta = {'timedesc':[], 'interval':[]}
     perFile = {}
 
-    for fname in args.filenames:
+    if len(args.filenames)==1 and args.filenames[0][-4:]==".txt":
+        input_filenames = read_filenames_from_file(args.filenames[0])
+    else:
+        input_filenames = args.filenames
+
+    for fname in input_filenames:
         srate, segm_voice_transmissions, recs_cut, meta = extract_transmissions_from_wav(fname, show=args.verbose>0)
         all_segm_transmissions.extend(segm_voice_transmissions)
         all_recs_cut.extend(recs_cut)
@@ -363,7 +402,7 @@ def main():
 
     scrambler_permut = np.concatenate((scrambler_permut, np.array(list(range(len(scrambler_permut), longest_trans)), dtype=int)))
    
-    for fname in args.filenames:
+    for fname in input_filenames:
         replace_decoded_in_wav(fname, perFile[fname][0], perFile[fname][1], scrambler_permut)
 
 
@@ -373,9 +412,12 @@ def main():
         save_iq_real_part_to_wave(srate, f"cut\\descrambled_{all_meta['timedesc'][i]}.wav", fix)
 
     print("Possible descrambled files saved.")
-    print((np.array(scrambler_permut)%15).reshape(int(len(scrambler_permut)//15), 15))
     
     if args.verbose>1:
+        print("Permutation %15 (in blocks):")
+        for i in range(int(len(scrambler_permut)//15)):
+            print(scrambler_permut[15*i : 15*(i+1)]%15)
+    
         lastP = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
         print("Op list:")
         for i in range(int(len(scrambler_permut)//15)):
