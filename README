@@ -24,7 +24,7 @@ g++ puzzle_solver.cpp -o puzzle_solver -O3 -std=c++2a
 
 Finding the permutation:
 
-./puzzle_solver < weights.txt
+./puzzle_solver < weights.txt > perm.txt
 
 
 To descramble a wave file, using permutation defined in perm.txt:

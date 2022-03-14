@@ -46,8 +46,8 @@ std::vector<std::array<float, SZ>> calculateIntraFrame(float cost[SZ][SZ]) {
         }
       }
     }
-    printf(".");
-    fflush(stdout);
+    fprintf(stderr, ".");
+    fflush(stderr);
   }
 
   std::vector<std::array<float, SZ>> res(SZ);
@@ -57,7 +57,7 @@ std::vector<std::array<float, SZ>> calculateIntraFrame(float cost[SZ][SZ]) {
       // result in costSoFar[0x7FFF]
       res[i][j] = costSoFar[i][j][0x7FFF];
     }
-  printf("\nintraCalc done. Cost[0][14] = %f\n", res[0][14]);
+  fprintf(stderr, "\nintraCalc done. Cost[0][14] = %f\n", res[0][14]);
   return res;
 }
 
@@ -101,12 +101,11 @@ std::vector<int> calculatePermut(float cost[SZ][SZ], int a, int B,
       }
     }
   }
-  printf(".");
-  fflush(stdout);
+  fprintf(stderr, ".");
+  fflush(stderr);
 
   res.resize(SZ);
   res[0] = a;
-  int now = B;
   res[SZ - 1] = B;
   size_t X = 0x7FFF;
   for (int i = SZ - 2; i > 0; i--) {
@@ -120,13 +119,14 @@ std::vector<int> calculatePermut(float cost[SZ][SZ], int a, int B,
 }
 
 int main() {
-  int N, M;
-  scanf("%i %i", &N, &M);
-  float cost[N][N];
-  for (int n = 0; n < N; n++) cost[n][n] = 0.0;
+  size_t N, M;
+  scanf("%li %li", &N, &M);
+  std::vector<std::vector<float>> cost;
+  cost.resize(N, std::vector<float>(N));
+  
   while (M--) {
-    int A, B;
-    scanf("%i %i", &A, &B);
+    size_t A, B;
+    scanf("%li %li", &A, &B);
     float tmp;
     scanf("%f", &tmp);
     if (A < N && B < N) cost[A][B] = tmp;
@@ -140,7 +140,7 @@ int main() {
     for (int i = 0; i < SZ; i++)
       for (int j = 0; j < SZ; j++) intraFrCost[i][j] = cost[base + i][base + j];
     stepMinCosts.push_back(calculateIntraFrame(intraFrCost));
-    printf("Step %i/%i done.\n", step + 1, numFrames);
+    fprintf(stderr, "Step %i/%i done.\n", step + 1, numFrames);
   }
 
   // find optimal costs
@@ -189,7 +189,7 @@ int main() {
         minCostAfterFrame[numFrames - 1][bestEnd])
       bestEnd = b;
   }
-  printf("Total min cost: %f\n", minCostAfterFrame[numFrames - 1][bestEnd]);
+  fprintf(stderr, "Total min cost: %f\n", minCostAfterFrame[numFrames - 1][bestEnd]);
   int now = bestEnd;
   optimEnd[numFrames - 1] = now;
   optimBeg[numFrames - 1] = thatBeg[numFrames - 1][now];
@@ -200,7 +200,7 @@ int main() {
   }
 
   for (int i = 0; i < numFrames; i++)
-    printf("frame %i. Optim beg: %i end %i\n", i, optimBeg[i], optimEnd[i]);
+    fprintf(stderr, "frame %i. Optim beg: %i end %i\n", i, optimBeg[i], optimEnd[i]);
 
   //	reconstruct the path
   std::vector<int> path;
@@ -214,7 +214,7 @@ int main() {
         calculatePermut(intraFrCost, optimBeg[step], optimEnd[step], base);
     path.insert(path.end(), frameP.begin(), frameP.end());
   }
-  printf("PERMUT:\n");
+  fprintf(stderr, "Permutation calculated.\n");
   for (auto a : path) printf("%i, ", a);
   printf("\n");
 }
