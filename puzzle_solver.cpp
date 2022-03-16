@@ -9,6 +9,19 @@ constexpr int SZ = 15;
 constexpr float INF = 9999999999999999.9;
 constexpr float EPS = 0.000001;
 
+std::vector<std::vector<uint16_t>> calcOrder() {
+  std::vector<std::vector<uint16_t>> res;
+  res.resize(SZ);
+  for (int num = 2; num < SZ; num++) {
+    for (size_t X = 3; X < 1 << SZ; X++) {
+      if (std::popcount(X) == num) res[num].push_back(X);
+    }
+  }
+  return res;
+}
+
+const std::vector<std::vector<uint16_t>> run_order = calcOrder();
+
 std::vector<std::array<float, SZ>> calculateIntraFrame(float cost[SZ][SZ]) {
   // USED Fragments; First; Last;
   std::array<std::array<std::vector<float>, SZ>, SZ> costSoFar;
@@ -32,10 +45,7 @@ std::vector<std::array<float, SZ>> calculateIntraFrame(float cost[SZ][SZ]) {
         // all possib prev state:
         for (int b = 0; b < SZ; b++) {
           if (b == a or b == c) continue;
-          for (size_t X = 3; X < (1 << SZ);
-               X++)  // what if that was the external loop?
-          {
-            if (std::popcount(X) != already) continue;
+          for (const auto X : run_order[already]) {
             if ((X & (1 << a)) == 0 or (X & (1 << b)) == 0 or
                 (X & (1 << c)) != 0)
               continue;
@@ -85,10 +95,7 @@ std::vector<int> calculatePermut(float cost[SZ][SZ], int a, int B,
       // all possib prev state:
       for (int b = 0; b < SZ; b++) {
         if (b == a or b == c) continue;
-        for (size_t X = 3; X < (1 << SZ);
-             X++)  // what if that was the external loop?
-        {
-          if (std::popcount(X) != already) continue;
+        for (const auto X : run_order[already]) {
           if ((X & (1 << a)) == 0 or (X & (1 << b)) == 0 or (X & (1 << c)) != 0)
             continue;
           auto nX = X | (1 << c);
@@ -123,7 +130,7 @@ int main() {
   scanf("%li %li", &N, &M);
   std::vector<std::vector<float>> cost;
   cost.resize(N, std::vector<float>(N));
-  
+
   while (M--) {
     size_t A, B;
     scanf("%li %li", &A, &B);
@@ -189,7 +196,8 @@ int main() {
         minCostAfterFrame[numFrames - 1][bestEnd])
       bestEnd = b;
   }
-  fprintf(stderr, "Total min cost: %f\n", minCostAfterFrame[numFrames - 1][bestEnd]);
+  fprintf(stderr, "Total min cost: %f\n",
+          minCostAfterFrame[numFrames - 1][bestEnd]);
   int now = bestEnd;
   optimEnd[numFrames - 1] = now;
   optimBeg[numFrames - 1] = thatBeg[numFrames - 1][now];
@@ -200,7 +208,8 @@ int main() {
   }
 
   for (int i = 0; i < numFrames; i++)
-    fprintf(stderr, "frame %i. Optim beg: %i end %i\n", i, optimBeg[i], optimEnd[i]);
+    fprintf(stderr, "frame %i. Optim beg: %i end %i\n", i, optimBeg[i],
+            optimEnd[i]);
 
   //	reconstruct the path
   std::vector<int> path;
