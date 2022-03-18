@@ -182,7 +182,7 @@ def get_segm_voice_trans(srate, audio, pream_postam_pairs, pream_len, postam_len
         if numSegments%15 != 0:
             print(f"numSegments%15 != 0 (=={numSegments%15})! Skipping for now...")
             continue
-        inacc_threshold_ms = 3.7
+        inacc_threshold_ms = 5
         if abs(inacc)/srate > inacc_threshold_ms/1000:
             print(f"Inaccurate by more than {inacc_threshold_ms}ms! Skipping for now...")
             continue
@@ -211,9 +211,9 @@ def show_spectrogram(srate, data):
 
 def simp_qnorm_j(a):
     return a
-    totpow = np.sum(a*a)
-    targetTotPow = len(a)/20*1024
-    return a * (targetTotPow / totpow)
+    #totpow = np.sum(a*a)
+    #targetTotPow = len(a)/20*1024
+    #return a * (targetTotPow / totpow)
 
 # COST FUNCTION - probably good place to optimize to get better results
 def judge_a_plus_b(srate, a, b):
@@ -221,11 +221,40 @@ def judge_a_plus_b(srate, a, b):
     window = signal.windows.kaiser(M, beta=4, sym=False)
     f1 = np.abs(np.fft.fft(a[-M:]*window))
     f2 = np.abs(np.fft.fft(b[0:M]*window))
-    nf1 = simp_qnorm_j(f1)
-    nf2 = simp_qnorm_j(f2)
+    flow = 200
+    fhi = 3000
+    blo = int(np.floor(M*(flow/(srate*2))))
+    bhi = int(np.ceil(M*(fhi/(srate*2))))
+    nf1 = simp_qnorm_j(f1[blo:bhi])
+    nf2 = simp_qnorm_j(f2[blo:bhi])
     dd = nf1-nf2
     r = dd*dd
     return np.mean(r)
+
+def judge_a_plus_b_bad(srate, a, b):
+    M=128
+    window = signal.windows.kaiser(M, beta=4, sym=False)
+    f1 = np.fft.fft(a[-M:]*window)
+    f2 = np.fft.fft(b[0:M]*window)
+    f1r = np.array(list(reversed(f1)))
+    x = signal.fftconvolve(np.conjugate(f2), f1r, 'valid')
+    r = np.abs(x)*np.abs(x)
+    check = int(M*300/srate)
+    return -np.mean(r[:check])-np.mean(r[-check:])
+
+
+def calc_clarity(s):
+    window = signal.windows.kaiser(len(s), beta=4, sym=False)
+    f = np.abs(np.fft.fft(s*window))
+    return np.max(f)/np.min(f)
+
+def calc_segment_beg_clarity(s):
+    M=128
+    return calc_clarity(s[:M])
+    
+def calc_segment_end_clarity(s):
+    M=128
+    return calc_clarity(s[-M:])
 
 
 def permut_rec_window_and_concat(rec, P):
@@ -234,6 +263,12 @@ def permut_rec_window_and_concat(rec, P):
         window = 1# signal.windows.kaiser(len(rec[0]), beta=1, sym=True)
         recP = [rec[P[i]]*window for i in range(len(rec))]
         return np.concatenate(recP)
+        
+def permut_block(block, P):
+        window = 1# signal.windows.kaiser(len(rec[0]), beta=1, sym=True)
+        recP = [block[P[i]]*window for i in range(len(block))]
+        return recP
+
 
 def extract_transmissions_from_wav(fname, show=False):
     print(f"Processing '{fname}'...")
@@ -247,12 +282,24 @@ def extract_transmissions_from_wav(fname, show=False):
 
     data=w.readframes(w.getnframes())
     w.close()
-
-    assert(w.getsampwidth()==2)
-    audio=np.frombuffer(data, dtype='short') #unhack, assumes 2 bytes per sample
+        
+    if w.getsampwidth()==2:
+        audio=np.frombuffer(data, dtype='short') #unhack, assumes 2 bytes per sample
+    elif w.getsampwidth()==1:
+        audio=np.frombuffer(data, dtype='int8') #unhack, assumes 2 bytes per sample
+    else:
+        print(f"Unsupported number of bytes per sample - {w.getsampwidth()}")
+        return
+        
     if w.getnchannels()==2:
         print("Using just 1st channel data!")
         audio = audio[::2]
+    if srate%250 != 0:
+        #audio = signal.resample_poly(audio, 8000, srate)
+        audio = signal.resample(audio, int(len(audio)/srate*8000))
+        srate = 8000
+        print(f"Resampled to: {srate}")
+        
 
     print("Data read")
     aiq = real_to_iq(srate, audio)
@@ -277,7 +324,7 @@ def extract_transmissions_from_wav(fname, show=False):
     THRESHOLD_PREAMBLE_PROMINENCE = 0.2
     THRESHOLD_POSTAMBLE_PEAK_HEIGHT = 0.3
     THRESHOLD_POSTAMBLE_PROMINENCE = 0.18
-    DISTANCE_PREAMBLE = 0.15
+    DISTANCE_PREAMBLE = 0.6
 
     pre_peaks, peak_prop = signal.find_peaks(conv_dem_pre, height = THRESHOLD_PREAMBLE_PEAK_HEIGHT * np.max(conv_dem_pre), distance = int(DISTANCE_PREAMBLE*srate), prominence=THRESHOLD_PREAMBLE_PROMINENCE * np.max(conv_dem_pre), wlen=srate*0.10)
     print(np.array(pre_peaks)/srate)
@@ -311,7 +358,7 @@ def extract_transmissions_from_wav(fname, show=False):
     segm_voice_transmissions, allRecsCut, metaDesc = get_segm_voice_trans(srate, audio, signal_intervals, len(preamble), len(postamble))
     return srate, segm_voice_transmissions, allRecsCut, {'timedesc':[basename+"_"+i for i in metaDesc['timedesc']], 'interval' : metaDesc['interval']}
 
-def replace_decoded_in_wav(fname, all_segm_transmissions, meta, scrambler_permut):
+def replace_decoded_in_wav(fname, all_segm_transmissions_descr, meta, scrambler_permut):
     dirname = os.path.split(fname)[0]
     basename = os.path.splitext(os.path.split(fname)[1])[0]
     w = wave.open(fname)
@@ -321,10 +368,8 @@ def replace_decoded_in_wav(fname, all_segm_transmissions, meta, scrambler_permut
     w.close()
     audio=np.array(np.frombuffer(data, dtype='short'))
 
-    for i, rec in enumerate(all_segm_transmissions):
-        fix = permut_rec_window_and_concat(rec, scrambler_permut)
-        fix = butter_bandpass_filter(fix, 100, 3500, srate, order=5)
-        audio[meta['interval'][i][0]:meta['interval'][i][1]] = fix[:]
+    for i, rec in enumerate(all_segm_transmissions_descr):
+        audio[meta['interval'][i][0]:meta['interval'][i][1]] = rec[:]
 
     save_iq_real_part_to_wave(srate, f"cut\\dscr_{basename}.wav", audio)
 
@@ -340,6 +385,14 @@ def read_permutation_from_file(fname):
             if w!='':
                 perm.append(int(w))
     return perm
+    
+def save_permutation_to_file(perm, fname):
+    f = open(fname, 'w')
+    for i in perm:
+        f.write("{}, ".format(i))
+    f.write("\n")
+    f.close()
+
 
 def read_filenames_from_file(fname):
     fnames = []
@@ -357,11 +410,101 @@ def read_filenames_from_file(fname):
     
     return fnames
 
+def calculate_weights_and_store_to_file(srate, all_segm_transmissions, fname):
+    trans_len = [len(trans) for trans in all_segm_transmissions]
+
+    longest_trans = np.max(trans_len+[0])
+    recSegmentsBegClarity=[]
+    recSegmentsEndClarity=[]
+    for rec in all_segm_transmissions:
+        begsClar = []
+        endsClar = []
+        for segm in rec:
+            begsClar.append(calc_segment_beg_clarity(segm))
+            endsClar.append(calc_segment_end_clarity(segm))
+        recSegmentsBegClarity.append(begsClar)
+        recSegmentsEndClarity.append(endsClar)
+
+    max_straddle = 29 ##UNHACK
+
+    prob_segm_a_before_b = {}
+    all_probs = []
+    for i in range(longest_trans):
+        prob_segm_a_before_b[i] = {}
+        for j in range(np.maximum(0, i-max_straddle), np.minimum(longest_trans-1, i+max_straddle+1)):
+            if i==j:
+                continue
+            prob_segm_a_before_b[i][j] = 0
+            
+            recs_clarity = [np.minimum(recSegmentsEndClarity[k][i], recSegmentsBegClarity[k][j]) for k in range(len(all_segm_transmissions)) if len(all_segm_transmissions[k]) > np.maximum(i, j)]
+            med_clarity = np.median(recs_clarity)
+            if len(recs_clarity) < 20:
+                med_clarity = 0
+            
+            partial_metrics = []
+            for rec in [rec for idx,rec in enumerate(all_segm_transmissions) if len(rec) > np.maximum(i, j) and np.minimum(recSegmentsEndClarity[idx][i], recSegmentsBegClarity[idx][j]) >= med_clarity]:
+                partial_metrics.append(judge_a_plus_b(srate, rec[i], rec[j]))
+            prob_segm_a_before_b[i][j] = np.sqrt(np.mean(partial_metrics))
+            all_probs.append((i, j, prob_segm_a_before_b[i][j]))
+
+    weiF = open(fname, "w")
+
+    weiF.write(f"{longest_trans} {len(all_probs)}\n")
+    for (a, b, c) in all_probs:
+        weiF.write(f"{a} {b} {c}\n")
+    weiF.close()
+
+    print("Probs:")
+    print(prob_segm_a_before_b[20])
+
+BASIS = [
+[6, 12, 8, 4, 0, 14, 10, 2, 5, 11, 7, 3, 1, 13, 9],
+[6, 2, 14, 10, 8, 4, 12, 0, 5, 1, 13, 9, 7, 3, 11],
+[10, 8, 2, 6, 14, 12, 0, 4, 9, 7, 5, 3, 13, 11, 1],
+[2, 10, 14, 12, 0, 6, 4, 8, 3, 9, 13, 11, 1, 7, 5],
+[12, 10, 8, 4, 2, 0, 14, 6, 11, 9, 7, 5, 3, 1, 13],
+[0, 14, 10, 6, 4, 12, 2, 8, 1, 13, 9, 7, 5, 11, 3],
+[8, 0, 12, 6, 14, 10, 4, 2, 7, 1, 11, 5, 13, 9, 3],
+[2, 6, 4, 0, 12, 10, 14, 8, 3, 7, 5, 1, 11, 9, 13], # not sure
+[8, 6, 4, 14, 12, 2, 10, 0, 7, 5, 3, 13, 11, 1, 9],
+[4, 2, 10, 8, 6, 0, 14, 12, 5, 3, 11, 9, 7, 1, 13],
+[14, 0, 8, 6, 4, 2, 12, 10, 13, 1, 9, 7, 5, 3, 11],
+[10, 14, 4, 2, 8, 0, 6, 13, 12, 11, 5, 3, 9, 1, 7],
+[8, 14, 2, 12, 0, 6, 4, 10, 9, 13, 3, 11, 1, 7, 5], # not sure
+[10, 4, 8, 12, 2, 14, 6, 0, 9, 3, 7, 11, 1, 13, 5],
+[4, 8, 14, 12, 10, 0, 6, 3, 2, 7, 13, 1, 11, 9, 5], # not sure
+[6, 14, 0, 12, 10, 2, 8, 5, 4, 13, 1, 11, 9, 3, 7]
+]
+
+def score_block(srate, block):
+    score = 0
+    for i in range(len(block)-1):
+        score += judge_a_plus_b(srate, block[i], block[i+1])
+    return score
+
+def find_base_descrambling_permut(srate, rec):
+    # quick option - ignore inter-block costs
+    print("Auto-descramble attempt...")
+    perm = []
+    mean_cost = 0
+    min_cost = 0
+    for i in range(int(len(rec)//15)):
+        block = rec[i*15:(i+1)*15]
+        base_costs = [score_block(srate, permut_block(block, bperm)) for bperm in BASIS]
+        best_perm = np.where(base_costs == np.min(base_costs))[0][0]
+        perm.extend(list(np.array(BASIS[best_perm])+i*15))
+        mean_cost += np.mean(base_costs)
+        min_cost += base_costs[best_perm]
+    print(f"Mean cost over min cost ratio: {mean_cost/min_cost}")
+    return np.array(perm)
+    
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('-a', dest='auto_descramble', action='store_true', help='Descrambling attempt done automatically, without assuming same permutation is used in each scrambled fragment.')
     parser.add_argument('-w', dest='weights_fname', type=str, help='Generate weights file with provided name')
     parser.add_argument('-p', dest='perm_fname', type=str, help='Use provided file with list of integers as a scrambler permutation', default='permutation.txt')
+    parser.add_argument('-s', dest='separate_weights', action='store_true', help='Create separate weights file for each scrambled fragment')
     parser.add_argument('--verbose', '-v', action='count', default=0)
     parser.add_argument('filenames', metavar='filename', type=str, nargs='+', help='wave file names to descramble or use for weights calculation')
     args = parser.parse_args()
@@ -403,10 +546,19 @@ def main():
     scrambler_permut = np.concatenate((scrambler_permut, np.array(list(range(len(scrambler_permut), longest_trans)), dtype=int)))
    
     for fname in input_filenames:
-        replace_decoded_in_wav(fname, perFile[fname][0], perFile[fname][1], scrambler_permut)
+        descr_fragments = []
+        for rec in perFile[fname][0]:
+            if args.auto_descramble:
+                scrambler_permut = find_base_descrambling_permut(srate, rec)
+            fix = permut_rec_window_and_concat(rec, scrambler_permut)
+            fix = butter_bandpass_filter(fix, 100, 3500, srate, order=5)
+            descr_fragments.append(fix)
+        replace_decoded_in_wav(fname, descr_fragments, perFile[fname][1], scrambler_permut)
 
 
     for i, rec in enumerate(all_segm_transmissions):
+        if args.auto_descramble:
+            scrambler_permut = find_base_descrambling_permut(srate, rec)
         fix = permut_rec_window_and_concat(rec, scrambler_permut)
         fix = butter_bandpass_filter(fix, 100, 3500, srate, order=5)
         save_iq_real_part_to_wave(srate, f"cut\\descrambled_{all_meta['timedesc'][i]}.wav", fix)
@@ -435,37 +587,20 @@ def main():
         
     for i, rec in enumerate(all_recs_cut):
         save_iq_real_part_to_wave(srate, f"cut\\part_{all_meta['timedesc'][i]}_withBegEnd.wav", rec)
-
         
     if args.weights_fname is not None:
         print("Calculating weights...")
+        if args.separate_weights:
+            for i in range(len(all_segm_transmissions)):
+                fnameBeg = args.weights_fname
+                fnameEnd = ""
+                if fnameBeg[-4:]==".txt":
+                    fnameBeg = fnameBeg[:-4]
+                    fnameEnd = ".txt"
+                calculate_weights_and_store_to_file(srate, all_segm_transmissions[i:i+1], "{}_{}{}".format(fnameBeg, i, fnameEnd))
+        else:
+            calculate_weights_and_store_to_file(srate, all_segm_transmissions, args.weights_fname)
 
-        max_straddle = 29 ##UNHACK
-
-        prob_segm_a_before_b = {}
-        all_probs = []
-        for i in range(longest_trans):
-            prob_segm_a_before_b[i] = {}
-            for j in range(np.maximum(0, i-max_straddle), np.minimum(longest_trans-1, i+max_straddle+1)):
-                if i==j:
-                    continue
-                prob_segm_a_before_b[i][j] = 0
-                
-                partial_metrics = []
-                for rec in [rec for rec in all_segm_transmissions if len(rec) > np.maximum(i, j)]:
-                    partial_metrics.append(judge_a_plus_b(srate, rec[i], rec[j]))
-                prob_segm_a_before_b[i][j] = np.sqrt(np.mean(partial_metrics))
-                all_probs.append((i, j, prob_segm_a_before_b[i][j]))
-
-        weiF = open(args.weights_fname, "w")
-
-        weiF.write(f"{longest_trans} {len(all_probs)}\n")
-        for (a, b, c) in all_probs:
-            weiF.write(f"{a} {b} {c}\n")
-        weiF.close()
-
-        print("Probs:")
-        print(prob_segm_a_before_b[20])
 
 
 
