@@ -8,6 +8,16 @@ Usage:
 analyser.py - parser, analyses and tries to descramble files listed in 'files_to_use'. Permutation used is taken from provided file, 'permutation.txt' by default.
 
 
+Simplest usage, with permutation calculation done in analyser.py, restricted to a small subset of possible block permutations:
+
+analyser.py -a file.wav
+
+It should produce descrambled wav files in "cut" folder.
+
+
+
+More complex use-cases:
+
 To calculate segments similarity weights based on given files, and save it in weights.txt:
 
 analyser.py -w weights.txt file1.wav file2.wav

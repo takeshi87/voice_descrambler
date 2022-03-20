@@ -78,7 +78,13 @@ def gen_preamble(srate=8000, f0 = 1200, f1 = 2400, fx = 2031, add_silence = 0.02
                            #cph_fsk(srate, [f0, f1], 200, '1101010011101100100101100001110000111101110001010001000011111001'),silence(srate, 64/200), # second type of scrambler... has different last 65 bits of preamble, maybe needs decoding
                            silence(srate, add_silence)))
                            
-
+def gen_preamble_v2(srate=8000, f0 = 1200, f1 = 2400, fsk_rate=200):
+    return np.concatenate((cph_fsk(srate, [f0, f1], fsk_rate, '000011010100111011001001011000011100001111011100010100010000111110000'),
+                           silence(srate, 16/fsk_rate), #counter
+                           cph_fsk(srate, [f0, f1], fsk_rate, '000000000000'),
+                           silence(srate, 32/fsk_rate),
+                           cph_fsk(srate, [f0, f1], fsk_rate, '0000000')))
+    
     
 def gen_postamble(srate=8000, f0 = 1200, f1 = 2400):
     return np.concatenate((silence(srate, SilenceShift), cph_fsk(srate, [f0, f1], 22.8, '1111000100110100', override_dur = 0.68)))
@@ -124,30 +130,52 @@ def save_iq_real_part_to_wave(srate, fname, data):
     pwave.close()
     return
     
-def match_transmission_start_stop(srate, pre, post):
-    min_trans = 0.75
+def match_transmission_start_stop(srate, pre, post, pream_len):
+    min_trans = 0.65
     min_samp_dist = min_trans * srate
     last_post = -2*min_samp_dist
     last_beg = None
     min_beg_post_samp_dist = 1.1 * srate
     postIdx=0
     res = []
+    singleSegmentSamples = int(round(0.044*srate))
+    print(f"Pream len: {pream_len/srate}")
     for beg in pre:
-        if beg < last_post - min_samp_dist:
-            print(f"too early peak... will update old entry: {beg/srate}")
-            lastEnt = res[-1]
-            print(f"Peak {lastEnt[0]/srate} has no matching postamble found - skipping transmission!!!" )
-            res = res[:-1]
-            postIdx = np.maximum(0, postIdx-1)
-        elif beg < last_post + min_samp_dist:
-            print(f"skipping beg: {beg}")
+        if beg < last_post + min_samp_dist:
+            print(f"skipping beg: {beg/srate}")
             continue
-        while postIdx < len(post) and post[postIdx] < beg + min_beg_post_samp_dist:
-            if beg > post[postIdx]:
-                print(f"skipped old postamble: {post[postIdx]/srate}")
-            postIdx += 1
-        if postIdx == len(post):
+        #if beg < last_post - min_samp_dist:
+        #    print(f"too early peak?... will update old entry: {beg/srate}")
+        #    lastEnt = res[-1]
+        #    print(f"Peak {lastEnt[0]/srate} has no matching postamble found - skipping transmission!!!" )
+        #    res = res[:-1]
+        #    postIdx = np.maximum(0, postIdx-1)
+        #elif beg < last_post + min_samp_dist:
+        #    print(f"skipping beg: {beg}")
+        #    continue
+        tryPostIdx = postIdx
+        vbeg = beg+pream_len
+        while tryPostIdx < len(post):
+            nsamp = post[tryPostIdx]-vbeg
+            numSegments = int(round(nsamp/singleSegmentSamples))
+            inacc = nsamp - numSegments*singleSegmentSamples
+            if nsamp < 0:
+                print(f"[{beg/srate}-{post[tryPostIdx]/srate}]: numSegments < 0 (=={numSegments})! Skipping old postamble...")
+                tryPostIdx += 1
+                continue
+            if numSegments%15 != 0:
+                print(f"[{beg/srate}-{post[tryPostIdx]/srate}]: numSegments%15 != 0 (=={numSegments%15})! Skipping potential postamble...")
+                tryPostIdx += 1
+                continue
+            if abs(inacc/srate) > 0.010:
+                print(f"[{beg/srate}-{post[tryPostIdx]/srate}]: inacurracy = {inacc*1000/srate}ms! Skipping potential postamble...")
+                tryPostIdx += 1
+                continue
             break
+        if tryPostIdx == len(post):
+            print(f"No good postamble found for preamble @{beg/srate}; skipping")
+            continue
+        postIdx = tryPostIdx
         res.append((beg, post[postIdx]))
         last_post = post[postIdx]
         postIdx += 1
@@ -182,7 +210,7 @@ def get_segm_voice_trans(srate, audio, pream_postam_pairs, pream_len, postam_len
         if numSegments%15 != 0:
             print(f"numSegments%15 != 0 (=={numSegments%15})! Skipping for now...")
             continue
-        inacc_threshold_ms = 5
+        inacc_threshold_ms = 7
         if abs(inacc)/srate > inacc_threshold_ms/1000:
             print(f"Inaccurate by more than {inacc_threshold_ms}ms! Skipping for now...")
             continue
@@ -270,35 +298,41 @@ def permut_block(block, P):
         return recP
 
 
-def extract_transmissions_from_wav(fname, show=False):
-    print(f"Processing '{fname}'...")
-    basename = os.path.splitext(os.path.split(fname)[1])[0]
-    w = wave.open(fname)
+def get_audio_data_srate_from_open_file(w):
     srate = w.getframerate()
-    print(f"sampling rate: {srate}")
-    
-    preamble = gen_preamble(srate)
-    postamble = gen_postamble(srate)
-
     data=w.readframes(w.getnframes())
-    w.close()
-        
     if w.getsampwidth()==2:
-        audio=np.frombuffer(data, dtype='short') #unhack, assumes 2 bytes per sample
+        audio=np.frombuffer(data, dtype='short')
     elif w.getsampwidth()==1:
-        audio=np.frombuffer(data, dtype='int8') #unhack, assumes 2 bytes per sample
+        audio=np.frombuffer(data, dtype='int8')
     else:
         print(f"Unsupported number of bytes per sample - {w.getsampwidth()}")
-        return
+        return ([], srate)
         
     if w.getnchannels()==2:
         print("Using just 1st channel data!")
         audio = audio[::2]
     if srate%250 != 0:
-        #audio = signal.resample_poly(audio, 8000, srate)
         audio = signal.resample(audio, int(len(audio)/srate*8000))
         srate = 8000
         print(f"Resampled to: {srate}")
+    return (np.array(audio), srate)
+
+def extract_transmissions_from_wav(fname, scr_type=0, show=False):
+    print(f"S[{scr_type}]. Processing '{fname}'...")
+    basename = os.path.splitext(os.path.split(fname)[1])[0]
+    w = wave.open(fname)
+    audio, srate = get_audio_data_srate_from_open_file(w)
+    w.close()
+    print(f"sampling rate: {srate}")
+    if scr_type==0:
+        preamble = gen_preamble(srate)
+    elif scr_type==1:
+        preamble = gen_preamble_v2(srate)
+    else:
+        print("Unsupported scrambler type")
+        return []
+    postamble = gen_postamble(srate)
         
 
     print("Data read")
@@ -321,7 +355,7 @@ def extract_transmissions_from_wav(fname, show=False):
     conv_dem_post-=np.mean(conv_dem_post)
 
     THRESHOLD_PREAMBLE_PEAK_HEIGHT = 0.3
-    THRESHOLD_PREAMBLE_PROMINENCE = 0.2
+    THRESHOLD_PREAMBLE_PROMINENCE = 0.3
     THRESHOLD_POSTAMBLE_PEAK_HEIGHT = 0.3
     THRESHOLD_POSTAMBLE_PROMINENCE = 0.18
     DISTANCE_PREAMBLE = 0.6
@@ -333,7 +367,7 @@ def extract_transmissions_from_wav(fname, show=False):
     print(np.array(po_peaks)/srate)
 #    print(po_peak_prop)
 
-    signal_intervals = match_transmission_start_stop(srate, pre_peaks, po_peaks)
+    signal_intervals = match_transmission_start_stop(srate, pre_peaks, po_peaks, len(preamble))
     print("Scrambled fragments found:")
     print(np.array(signal_intervals)/srate)
 
@@ -353,7 +387,7 @@ def extract_transmissions_from_wav(fname, show=False):
     print("Parts durations:")
     for (a,b) in signal_intervals:
         voicePartDur = (b-a-len(preamble))/srate
-        print(f"{voicePartDur}")
+        print(f"{voicePartDur}s = {voicePartDur/0.044} segments = {voicePartDur/0.044/15} blocks")
 
     segm_voice_transmissions, allRecsCut, metaDesc = get_segm_voice_trans(srate, audio, signal_intervals, len(preamble), len(postamble))
     return srate, segm_voice_transmissions, allRecsCut, {'timedesc':[basename+"_"+i for i in metaDesc['timedesc']], 'interval' : metaDesc['interval']}
@@ -362,17 +396,13 @@ def replace_decoded_in_wav(fname, all_segm_transmissions_descr, meta, scrambler_
     dirname = os.path.split(fname)[0]
     basename = os.path.splitext(os.path.split(fname)[1])[0]
     w = wave.open(fname)
-    srate = w.getframerate()
-
-    data=w.readframes(w.getnframes())
+    audio, srate = get_audio_data_srate_from_open_file(w)
     w.close()
-    audio=np.array(np.frombuffer(data, dtype='short'))
 
     for i, rec in enumerate(all_segm_transmissions_descr):
         audio[meta['interval'][i][0]:meta['interval'][i][1]] = rec[:]
 
     save_iq_real_part_to_wave(srate, f"cut\\dscr_{basename}.wav", audio)
-
 
 def read_permutation_from_file(fname):
     perm = []
@@ -504,6 +534,7 @@ def main():
     parser.add_argument('-a', dest='auto_descramble', action='store_true', help='Descrambling attempt done automatically, without assuming same permutation is used in each scrambled fragment.')
     parser.add_argument('-w', dest='weights_fname', type=str, help='Generate weights file with provided name')
     parser.add_argument('-p', dest='perm_fname', type=str, help='Use provided file with list of integers as a scrambler permutation', default='permutation.txt')
+    parser.add_argument('-t', dest='scr_type', type=int, help='Scrambler type. 0 - the one with 2030Hz signal in preamble and same permutation reused between transmissions. 1 - default - No 2030Hz signal, varying preamble, changing permutation', default=1)
     parser.add_argument('-s', dest='separate_weights', action='store_true', help='Create separate weights file for each scrambled fragment')
     parser.add_argument('--verbose', '-v', action='count', default=0)
     parser.add_argument('filenames', metavar='filename', type=str, nargs='+', help='wave file names to descramble or use for weights calculation')
@@ -525,7 +556,7 @@ def main():
         input_filenames = args.filenames
 
     for fname in input_filenames:
-        srate, segm_voice_transmissions, recs_cut, meta = extract_transmissions_from_wav(fname, show=args.verbose>0)
+        srate, segm_voice_transmissions, recs_cut, meta = extract_transmissions_from_wav(fname, scr_type=args.scr_type, show=args.verbose>0)
         all_segm_transmissions.extend(segm_voice_transmissions)
         all_recs_cut.extend(recs_cut)
         perFile[fname] = (segm_voice_transmissions, meta)
